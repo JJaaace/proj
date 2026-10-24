@@ -1,0 +1,16 @@
+[
+  {
+    "id": "FDR-01",
+    "substation_id": "SUB-01",
+    "overhead_pct": 0.82,
+    "vegetation_density": 0.74,
+    "avg_asset_age_years": 27.4
+  },
+  {
+    "id": "FDR-02",
+    "substation_id": "SUB-01",
+    "overhead_pct": 0.36,
+    "vegetation_density": 0.28,
+    "avg_asset_age_years": 13.2
+  }
+]

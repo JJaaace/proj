@@ -1,0 +1,1 @@
+"""Geospatial data integration placeholder."""
