@@ -1,0 +1,1 @@
+Your power is out. {detail} STOP=end
