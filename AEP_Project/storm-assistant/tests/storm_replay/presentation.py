@@ -48,7 +48,7 @@ def export_audit(path: Path, result, *, mode: str, dry_run: bool) -> None:
     document = {
         "format_version": 1, "mode": mode, "dry_run": dry_run,
         "notification_delivery": "Handler reports only; no carrier delivery receipts",
-        "deferred_delivery": "UNVERIFIED: no agreed pending-message flush interface",
+        "deferred_delivery": result.summary.get("deferred_support", "UNVERIFIED"),
         "summary": result.summary, "entries": result.audit.to_records(),
     }
     with path.open("x", encoding="utf-8") as destination:

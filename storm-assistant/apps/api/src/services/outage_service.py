@@ -1,1 +1,0 @@
-"""Outage status service placeholder."""

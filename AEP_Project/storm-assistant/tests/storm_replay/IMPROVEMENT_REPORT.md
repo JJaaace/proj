@@ -1,3 +1,5 @@
+> Historical report for Person 3 commit `52cd167`. Current four-person integration status is in [INTEGRATION_REPORT.md](../../INTEGRATION_REPORT.md).
+
 # Person 3 improvement audit and integration status
 
 ## Verified starting point

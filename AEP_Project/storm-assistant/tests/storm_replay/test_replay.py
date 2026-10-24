@@ -124,7 +124,9 @@ def test_default_cli_without_secrets_exits_cleanly():
                              capture_output=True, text=True, timeout=20)
     assert process.returncode == 0, process.stderr
     assert "DRY-RUN" in process.stdout and "active_failures=none" in process.stdout
-    assert "MESSAGING_MOCK_UNAVAILABLE" in process.stdout
+    assert "dependencies=integrated" in process.stdout
+    assert "MESSAGING_MOCK_UNAVAILABLE" not in process.stdout
+    assert "MESSAGING_SENT_DRY_RUN" in process.stdout
 
 
 @pytest.mark.parametrize("minutes", [0, -1])

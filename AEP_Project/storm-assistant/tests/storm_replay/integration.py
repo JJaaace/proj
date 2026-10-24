@@ -2,9 +2,11 @@
 
 from dataclasses import dataclass, fields, is_dataclass
 from importlib import import_module
+from datetime import datetime
 import inspect
 import json
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from services.context.contracts import Dependencies, SNAPSHOT_FIELDS, Town, local_time
 
@@ -55,6 +57,23 @@ def require_model(factory, name: str, expected: tuple[str, ...]) -> None:
         raise ValueError(f"Contract mismatch: {name} fields differ; missing={set(expected) - declared}, extra={declared - set(expected)}")
 
 
+def normalize_scenario_times(storm: dict, timeline: list[dict]) -> tuple[dict, list[dict]]:
+    """Convert the source's explicit offsets to Ohio local ISO without editing source JSON."""
+    storm, timeline = dict(storm), [dict(event) for event in timeline]
+    locations = [(storm, "start_time")] + [
+        (event, key) for event in timeline for key in ("time", "etr_start", "etr_end") if key in event
+    ]
+    parsed = [(record, key, datetime.fromisoformat(record[key])) for record, key in locations]
+    aware = {value.tzinfo is not None for _, _, value in parsed}
+    if len(aware) > 1:
+        raise ValueError("Mixed aware and naive source scenario times are ambiguous")
+    for record, key, value in parsed:
+        if value.tzinfo is not None:
+            value = value.astimezone(ZoneInfo("America/New_York")).replace(tzinfo=None)
+        record[key] = local_time(value).isoformat()
+    return storm, timeline
+
+
 @dataclass(frozen=True)
 class Runtime:
     """Replay inputs plus a visible distinction between integrated and demo mode."""
@@ -102,7 +121,7 @@ def load_runtime(mode: str = "auto", project_root: Path = PROJECT_ROOT) -> Runti
         if not isinstance(records[name], expected):
             raise ValueError(f"{path} must contain a JSON {expected.__name__}")
     town = Town(*(records[name] for name in ("substations", "feeders", "transformers", "customers")))
-    local_time(records["storm"]["start_time"])
+    records["storm"], records["storm_timeline"] = normalize_scenario_times(records["storm"], records["storm_timeline"])
     models = import_module("data.schemas.models")
     require_model(models.CustomerSnapshot, "CustomerSnapshot", SNAPSHOT_FIELDS)
     require_model(models.AlertEvent, "AlertEvent", ("alert_type", "customer_id", "snapshot", "previous_snapshot", "sim_time"))
@@ -116,6 +135,7 @@ def load_runtime(mode: str = "auto", project_root: Path = PROJECT_ROOT) -> Runti
         for row in rows:
             if not graph.has_edge(row[parent], row["id"]):
                 raise ValueError(f"Grid graph missing electrical edge {row[parent]} -> {row['id']}")
+    messaging = import_module("messaging")
     deps = Dependencies(
         models.CustomerSnapshot, models.AlertEvent,
         _export("analytics.network", "tracing", "downstream_customers"),
@@ -124,7 +144,9 @@ def load_runtime(mode: str = "auto", project_root: Path = PROJECT_ROOT) -> Runti
         _export("analytics.geospatial", "storm_overlay", "storm_position"),
         _export("analytics.geospatial", "storm_overlay", "storm_arrival_time"),
         _export("analytics.geospatial", "storm_overlay", "in_high_wind_zone"),
-        getattr(import_module("messaging"), "handle_alert"),
+        getattr(messaging, "handle_alert"),
+        getattr(messaging, "_advance_clock", None), getattr(messaging, "reset_for_test", None),
+        getattr(messaging, "_next_pending_time", None),
     )
     for name, parameters in (
         ("downstream_customers", ("device_id",)), ("outage_risk", ("feeder_id", "storm")),

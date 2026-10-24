@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from .contracts import Dependencies, Town, field, local_time, validate_snapshot
+from .contracts import Dependencies, Town, construct_model, field, local_time, validate_snapshot
 from .lifecycle import Failure, OperationalState, customer_status
 
 
@@ -97,7 +97,7 @@ class SnapshotBuilder:
                     failure = failures[0]
                     cause, crew_status = failure.damage_type, failure.crew_status
                     etr_start, etr_end, confidence = self._estimate(failure)
-            snapshots[identifier] = deps.snapshot_model(
+            snapshots[identifier] = construct_model(deps.snapshot_model,
                 customer_id=identifier, first_name=customer["first_name"], phone=customer["phone"],
                 language=customer["language"], sms_opt_in=customer["sms_opt_in"],
                 medical_priority=customer["medical_priority"], feeder_id=feeder_id,

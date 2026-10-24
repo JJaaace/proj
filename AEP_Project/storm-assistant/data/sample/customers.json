@@ -1,0 +1,46 @@
+[
+  {
+    "id": "CUST-001",
+    "first_name": "Avery",
+    "phone": "+12025550101",
+    "lat": 39.7623,
+    "lon": -84.1845,
+    "transformer_id": "TR-101",
+    "medical_priority": true,
+    "sms_opt_in": true,
+    "language": "en"
+  },
+  {
+    "id": "CUST-002",
+    "first_name": "Jordan",
+    "phone": "+12025550102",
+    "lat": 39.7626,
+    "lon": -84.1841,
+    "transformer_id": "TR-101",
+    "medical_priority": false,
+    "sms_opt_in": true,
+    "language": "en"
+  },
+  {
+    "id": "CUST-003",
+    "first_name": "Casey",
+    "phone": "+12025550103",
+    "lat": 39.7642,
+    "lon": -84.1811,
+    "transformer_id": "TR-102",
+    "medical_priority": false,
+    "sms_opt_in": false,
+    "language": "en"
+  },
+  {
+    "id": "CUST-004",
+    "first_name": "Riley",
+    "phone": "+12025550104",
+    "lat": 39.7618,
+    "lon": -84.177,
+    "transformer_id": "TR-201",
+    "medical_priority": false,
+    "sms_opt_in": true,
+    "language": "es"
+  }
+]

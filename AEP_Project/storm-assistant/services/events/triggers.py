@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
-from services.context.contracts import local_time, validate_snapshot
+from services.context.contracts import construct_model, local_time, validate_snapshot
 from .audit import AuditTrail, snapshot_details
 
 
@@ -171,7 +171,7 @@ def get_alert_events(
         types.append("restored")
         history.restored_alerted = True
         history.outage_open = False
-    events = [alert_model(
+    events = [construct_model(alert_model,
         alert_type=kind, customer_id=snapshot.customer_id, snapshot=snapshot,
         previous_snapshot=previous, sim_time=sim_time,
     ) for kind in types]

@@ -29,6 +29,7 @@ class ReplayResult:
     audit: AuditTrail = field(default_factory=AuditTrail)
     summary: dict = field(default_factory=dict)
     handler_calls: int = 0
+    deferred_outcomes: list[dict] = field(default_factory=list)
 
 
 def simulation_times(state: OperationalState, storm: dict, step_minutes: int) -> list[datetime]:
@@ -49,14 +50,24 @@ def simulation_times(state: OperationalState, storm: dict, step_minutes: int) ->
     return sorted(times)
 
 
-def simulation_frames(state: OperationalState, times: list[datetime]):
+def simulation_frames(state: OperationalState, times: list[datetime], next_delivery_time=None):
     """Expose each operational report before a later same-time report can erase it."""
     for now in times:
+        if next_delivery_time is not None:
+            due = next_delivery_time()
+            while due is not None and state.sim_time is not None and state.sim_time < due < now:
+                yield due, state.advance(due)
+                due = next_delivery_time()
         if state.cursor < len(state.events) and state.events[state.cursor]["time"] <= now:
             while state.cursor < len(state.events) and state.events[state.cursor]["time"] <= now:
                 yield now, state.advance(now, max_events=1)
         else:
             yield now, state.advance(now)
+    if next_delivery_time is not None:
+        due = next_delivery_time()
+        while due is not None and state.sim_time is not None and due > state.sim_time:
+            yield due, state.advance(due)
+            due = next_delivery_time()
 
 
 def run_replay(
@@ -76,17 +87,22 @@ def run_replay(
     builder = SnapshotBuilder(runtime.town, runtime.dependencies, crews_available=crews_available)
     times = simulation_times(state, runtime.storm, step_minutes)
     history, result = AlertHistory(), ReplayResult()
+    if dry_run and runtime.dependencies.reset_for_replay is not None:
+        runtime.dependencies.reset_for_replay()
     playback = playback or Playback()
     last_active_devices: tuple | None = None
+    pending_sequences: dict[str, int] = {}
     mode = "DRY-RUN" if dry_run else "LIVE verified team recipients only"
     log(f"{mode}; dependencies={runtime.mode}")
     if runtime.mode == "demo":
         log("OFFLINE FIXTURES: models, analytics, graph adapter, and messaging are simulated; no SMS delivery.")
     log(f"Simulated crews_available={crews_available!r}; unknown damage has no ETR.")
-    log("Deferred delivery: UNVERIFIED; handle_alert has no agreed pending-message flush hook.")
+    deferred_support = runtime.dependencies.advance_clock is not None
+    log("Deferred delivery: messaging clock drain enabled." if deferred_support else
+        "Deferred delivery: UNVERIFIED; no pending-message clock hook is available.")
     if playback.step and not playback.interactive:
         log("Step playback: noninteractive input; continuing without prompts.")
-    for now, applied in simulation_frames(state, times):
+    for now, applied in simulation_frames(state, times, runtime.dependencies.next_delivery_time):
         audit_start = len(result.audit.entries)
         result.applied_events.extend(applied)
         position = runtime.dependencies.storm_position(runtime.storm, now)
@@ -127,7 +143,9 @@ def run_replay(
                 previous, snapshot, now, history,
                 alert_model=runtime.dependencies.alert_model, audit=result.audit,
             ))
-        visible = verbose or bool(applied or events) or not result.snapshots or now == times[-1]
+        pending_due = runtime.dependencies.next_delivery_time() if runtime.dependencies.next_delivery_time is not None else None
+        visible = (verbose or bool(applied or events) or not result.snapshots or now == times[-1]
+                   or (pending_due is not None and pending_due <= now))
         if visible:
             playback.wait(now)
             log(f"[{now.isoformat(timespec='minutes')}] storm=({position[0]:.4f}, {position[1]:.4f}) "
@@ -146,8 +164,6 @@ def run_replay(
                     context = f" ETR={entry.details['etr_start']}..{entry.details['etr_end']} confidence={entry.details['confidence']}"
                 elif entry.alert_type == "outage_confirmed":
                     context = f" cause={entry.details['cause']}"
-                if entry.details["medical_priority"]:
-                    context += " medical_priority=True"
                 log(f"{prefix} ALERT {entry.alert_type} {entry.customer_id} emitted reason={entry.reason_code}{context}")
             elif verbose and entry.category == "alert_decision":
                 log(f"{prefix} DECISION {entry.customer_id} {entry.alert_type} {entry.decision} reason={entry.reason_code}")
@@ -174,27 +190,48 @@ def run_replay(
             result.alerts.append(event)
             result.outcomes.append(outcome)
             decision, reason = delivery_decision(outcome, dry_run)
+            if reason == "MESSAGING_THROTTLED":
+                pending_sequences[event.customer_id] = len(result.alerts)
+            else:
+                pending_sequences.pop(event.customer_id, None)
             entry = result.audit.record(now, "delivery_outcome", decision, reason,
                                         customer_id=event.customer_id, alert_type=event.alert_type,
                                         details={"handler_sent": outcome["sent"], "dry_run": dry_run,
                                                  "body_present": outcome["body"] is not None,
                                                  "body_length": len(outcome["body"] or ""),
                                                  "alert_sequence": len(result.alerts),
-                                                 "deferred_support": "UNVERIFIED"})
+                                                 "deferred_support": "AVAILABLE" if deferred_support else "UNVERIFIED"})
             log(f"[{now.isoformat(timespec='minutes')}] DELIVERY {entry.customer_id} {event.alert_type} "
                 f"mode={'dry-run' if dry_run else 'live'} handler_sent={outcome['sent']} "
                 f"decision={decision} reason={reason}")
+        if runtime.dependencies.advance_clock is not None:
+            for deferred in runtime.dependencies.advance_clock(now, snapshots, dry_run=dry_run):
+                event, outcome = deferred["event"], deferred["outcome"]
+                result.handler_calls += 1
+                result.deferred_outcomes.append(deferred)
+                decision, reason = delivery_decision(outcome, dry_run)
+                entry = result.audit.record(now, "deferred_delivery_outcome", decision, reason,
+                                            customer_id=event.customer_id, alert_type=event.alert_type,
+                                            details={"handler_sent": outcome["sent"], "dry_run": dry_run,
+                                                     "alert_sequence": pending_sequences.pop(event.customer_id, None),
+                                                     "deferred_support": "AVAILABLE"})
+                log(f"[{now.isoformat(timespec='minutes')}] DEFERRED_DELIVERY {entry.customer_id} {event.alert_type} "
+                    f"handler_sent={outcome['sent']} reason={reason}")
         result.snapshots = snapshots
     unresolved = sorted(state.active_failures)
-    delivery_counts = Counter(entry.reason_code for entry in result.audit.entries if entry.category == "delivery_outcome")
+    delivery_counts = Counter(entry.reason_code for entry in result.audit.entries
+                              if entry.category in ("delivery_outcome", "deferred_delivery_outcome"))
+    all_outcomes = result.outcomes + [row["outcome"] for row in result.deferred_outcomes]
     result.summary = {
         "operational_events": len(result.applied_events), "alerts_emitted": len(result.alerts),
         "alerts_by_type": dict(sorted(Counter(event.alert_type for event in result.alerts).items())),
         "alerts_by_customer": dict(sorted(Counter(event.customer_id for event in result.alerts).items())),
         "handler_calls": result.handler_calls,
-        "handler_reported_sent": sum(outcome["sent"] for outcome in result.outcomes),
-        "successful_dry_runs": sum(outcome["sent"] for outcome in result.outcomes) if dry_run else 0,
-        "not_sent": sum(not outcome["sent"] for outcome in result.outcomes),
+        "handler_reported_sent": sum(outcome["sent"] for outcome in all_outcomes),
+        "successful_dry_runs": sum(outcome["sent"] for outcome in all_outcomes) if dry_run else 0,
+        "not_sent": sum(not outcome["sent"] for outcome in all_outcomes),
+        "deferred_deliveries": len(result.deferred_outcomes),
+        "deferred_support": "AVAILABLE" if deferred_support else "UNVERIFIED",
         "delivery_reason_counts": dict(sorted(delivery_counts.items())),
         "ever_affected": sorted({event.customer_id for event in result.alerts if event.alert_type == "outage_confirmed"}),
         "restored_customers": sorted(key for key, snapshot in result.snapshots.items() if snapshot.status == "restored"),
@@ -226,8 +263,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Wall-clock presentation delays only; simulated time is unchanged")
     parser.add_argument("--step", action="store_true", help="Enter advances visible frames; noninteractive runs never prompt")
     parser.add_argument("--audit-json", type=Path, help="Create a sanitized audit report; existing files are preserved")
-    parser.add_argument("--crews-available", type=int, default=None,
-                        help="Explicit simulated crew-count assumption; absent disables integrated ETRs")
+    parser.add_argument("--crews-available", type=int, default=1,
+                        help="Simulated crew-count assumption (default: 1); never a live crew inventory")
     args = parser.parse_args(argv)
     try:
         if args.audit_json is not None and args.audit_json.exists():

@@ -94,8 +94,11 @@ class AuditTrail:
         return entry
 
     def to_records(self) -> list[dict]:
-        """Return JSON-ready sanitized records without touching public model serialization."""
-        return [asdict(entry) for entry in self.entries]
+        """Export operational records without medical flags or public model serialization."""
+        records = [asdict(entry) for entry in self.entries]
+        for record in records:
+            record["details"].pop("medical_priority", None)
+        return records
 
 
 def delivery_decision(outcome: dict, dry_run: bool) -> tuple[str, str]:
@@ -103,10 +106,15 @@ def delivery_decision(outcome: dict, dry_run: bool) -> tuple[str, str]:
     if outcome["sent"]:
         return ("sent_dry_run", "MESSAGING_SENT_DRY_RUN") if dry_run else ("reported_sent", "MESSAGING_REPORTED_SENT")
     reason = (outcome["reason"] or "").strip().lower()
+    if reason.startswith("guardrail_failed:"):
+        return "blocked", "MESSAGING_GUARDRAIL_REJECTED"
+    if reason.startswith("provider_error:"):
+        return "error", "MESSAGING_SEND_ERROR"
     known = {
         "throttled": ("blocked_by_messaging", "MESSAGING_THROTTLED"),
         "throttle": ("blocked_by_messaging", "MESSAGING_THROTTLED"),
         "no_consent": ("blocked", "MESSAGING_NO_CONSENT"),
+        "no_sms_consent": ("blocked", "MESSAGING_NO_CONSENT"),
         "consent_blocked": ("blocked", "MESSAGING_NO_CONSENT"),
         "opted_out": ("blocked", "MESSAGING_NO_CONSENT"),
         "guardrail_rejected": ("blocked", "MESSAGING_GUARDRAIL_REJECTED"),

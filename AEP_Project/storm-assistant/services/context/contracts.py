@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, get_args, get_type_hints
 
 
 DAMAGE_TYPES = frozenset({
@@ -31,6 +31,16 @@ def local_time(value: str | datetime) -> datetime:
 def field(value: Any, name: str) -> Any:
     """Read a documented field from a dict, dataclass, or Pydantic model."""
     return value[name] if isinstance(value, Mapping) else getattr(value, name)
+
+
+def construct_model(factory: Callable[..., Any], **values: Any) -> Any:
+    """Honor the canonical model's declared ISO-string or datetime representation."""
+    annotations = get_type_hints(factory) if isinstance(factory, type) else {}
+    for name in ("storm_arrival", "etr_start", "etr_end", "updated_at", "sim_time"):
+        annotation = annotations.get(name)
+        if isinstance(values.get(name), datetime) and (annotation is str or str in get_args(annotation)):
+            values[name] = local_time(values[name]).isoformat()
+    return factory(**values)
 
 
 def validate_snapshot(snapshot: Any) -> None:
@@ -72,6 +82,9 @@ class Dependencies:
     storm_arrival_time: Callable[[dict, float, float], datetime | None]
     in_high_wind_zone: Callable[[dict, float, float, datetime], bool]
     handle_alert: Callable[..., dict]
+    advance_clock: Callable[..., list[dict]] | None = None
+    reset_for_replay: Callable[[], None] | None = None
+    next_delivery_time: Callable[[], datetime | None] | None = None
 
 
 @dataclass(frozen=True)
