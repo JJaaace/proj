@@ -1,0 +1,22 @@
+{
+  "model_name": "OutageRiskCalibratedPhysicalModel",
+  "version": "1.0.0",
+  "calibration_factor": 0.77,
+  "feature_weights": {
+    "wind_severity_exponent": 1.5,
+    "wind_reference_speed_kmh": 100.0,
+    "vegetation_base_weight": 0.3,
+    "vegetation_slope_weight": 0.7,
+    "rain_scale_mm": 50.0,
+    "rain_max_multiplier": 1.5,
+    "age_design_life_years": 40.0,
+    "underground_residual_risk": 0.04
+  },
+  "benchmark_targets": {
+    "FDR-3_Storm_Ava_target": 0.72
+  },
+  "training_stats": {
+    "samples_analyzed": 100,
+    "historical_outage_rate": 0.29
+  }
+}

@@ -1,18 +1,28 @@
 """
 outage_risk.py - Feeder outage risk prediction model.
 
-Owner: Person 2 (Predictions and Maps)
+Owner: Person 2 (Predictions & Geospatial)
 Layer: Layer 2 Analytics (analytics/predictive)
 
 Contract (Section 6.3):
     outage_risk(feeder_id: str, storm: dict) -> float  # 0.0 to 1.0
+
+Features:
+    - Integrates with features.py for normalized attribute extraction
+    - Uses calibrated physical parameters (and optional saved models in models/)
+    - Yields 0.72 for FDR-3 under Storm Ava (matching Section 6.4)
 """
 
 from __future__ import annotations
 import json
-import os
 from pathlib import Path
 from typing import Dict, Any, Optional
+
+from analytics.predictive.features import (
+    extract_feeder_features,
+    extract_storm_features,
+    build_interaction_features,
+)
 
 # Default fallback feeder catalog for when data/sample/feeders.json has not been created yet
 # Values calibrated to match Section 6.1 and Section 6.4 of the specification.
@@ -96,46 +106,34 @@ def calculate_risk(
     avg_asset_age_years: float,
     peak_gust_kmh: float,
     rainfall_mm: float,
+    calibration_factor: float = 0.77,
 ) -> float:
     """
     Core physical vulnerability formula combining storm intensity and infrastructure resilience.
-    
-    Factors:
-    - Wind intensity: non-linear force starting around 50 km/h, accelerating past 90 km/h.
-    - Overhead exposure: underground lines (overhead_pct=0) are shielded from wind/branches.
-    - Vegetation interaction: tree canopy overhang * overhead line exposure is primary cause of faults.
-    - Soil saturation: rainfall softens ground, loosening roots and accelerating tree topples.
-    - Asset age: aging poles/crossarms have higher structural failure probability under gust load.
-    
-    Calibrated so FDR-3 with Storm Ava (110 km/h, 60 mm rain) yields 0.72 risk (matching spec).
+    Uses feature extraction from features.py.
     """
-    # 1. Wind Gust Factor (calibrated for km/h)
-    # Under 40 km/h is benign breeze; 70-110+ km/h causes tree limb snapping and conductor contact
-    gust = max(0.0, float(peak_gust_kmh))
-    if gust <= 30.0:
-        wind_factor = gust / 150.0  # minimal
-    else:
-        wind_factor = ((gust / 100.0) ** 1.5)
+    feeder_dict = {
+        "overhead_pct": overhead_pct,
+        "vegetation_density": vegetation_density,
+        "avg_asset_age_years": avg_asset_age_years,
+    }
+    storm_dict = {
+        "peak_gust_kmh": peak_gust_kmh,
+        "rainfall_mm": rainfall_mm,
+    }
 
-    # 2. Exposure & Vegetation interaction (overhead line vulnerability)
-    oh = max(0.0, min(1.0, float(overhead_pct)))
-    veg = max(0.0, min(1.0, float(vegetation_density)))
-    # Overhead lines in dense tree corridors are at acute risk
-    # Underground lines (1 - oh) have small base failure rate
-    tree_exposure = oh * (0.30 + 0.70 * veg)
-    underground_exposure = (1.0 - oh) * 0.04
+    f_feats = extract_feeder_features(feeder_dict)
+    s_feats = extract_storm_features(storm_dict)
+    interactions = build_interaction_features(f_feats, s_feats)
 
-    # 3. Rainfall / Soil saturation factor
-    rain = max(0.0, float(rainfall_mm))
-    rain_factor = 1.0 + 0.20 * min(rain / 50.0, 1.5)
+    # Combined raw vulnerability:
+    # tree fall hazard + structural pole stress + underground line residual
+    wind_factor = s_feats["wind_severity"]
+    exposure = interactions["tree_exposure"] + interactions["underground_exposure"]
+    rain_factor = s_feats["soil_saturation"]
+    age_factor = 0.80 + 0.40 * f_feats["age_normalized"]
 
-    # 4. Asset Age factor (normalized against 40-year utility design life)
-    age = max(0.0, float(avg_asset_age_years))
-    age_factor = 0.80 + 0.40 * min(age / 40.0, 1.5)
-
-    # Combined raw vulnerability
-    # Calibrated coefficient 0.77 yields 0.72 for FDR-3 with Storm Ava (matching Section 6.4)
-    raw_score = 0.77 * wind_factor * (tree_exposure + underground_exposure) * rain_factor * age_factor
+    raw_score = calibration_factor * wind_factor * exposure * rain_factor * age_factor
 
     # Floor at 0.0 and cap at 0.99
     risk = max(0.0, min(0.99, raw_score))
@@ -157,7 +155,6 @@ def outage_risk(feeder_id: str, storm: dict) -> float:
     feeder = feeders.get(feeder_id)
 
     if not feeder:
-        # Fallback to realistic median feeder if unknown ID
         feeder = {
             "id": feeder_id,
             "overhead_pct": 0.70,
