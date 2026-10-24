@@ -1,0 +1,411 @@
+--- PAGE 1 ---
+Storm Assistant: Project Speciﬁcation
+For AI assistants reading this: this ﬁle is the single source of truth for the project. Read it
+fully before writing code. Follow the data contracts in Section 6 exactly. If a request
+conﬂicts with this spec, point out the conﬂict instead of silently changing a contract.
+Section 11 lists the rules you must follow.
+1. Project at a glance
+Event Hack OHI/O 2026 (hackathon)
+Team Jace Joseph, Atharva Sati, Shaun Thomas, Teja Mathukumalli
+Repo https://github.com/JJaaace/proj
+Language Python 3.11+
+One-line
+pitch
+An AI-powered assistant that texts electric utility customers timely, personalized, plain-
+language updates before, during and after a major storm outage.
+The problem
+When a major storm approaches, utility customers want three answers: Will my power go out?
+Why is it out? When will it come back? Today they usually get generic messages, wrong
+restoration times, or nothing at all, so they ﬂood call centers. Many confusing situations (for
+example, "my neighbor has power but I don't") are never explained.
+Our solution
+A pipeline that combines ﬁve kinds of intelligence and turns them into one accurate, personal
+text message per customer:
+1. Predictive analytics: who is likely to lose power, and when it will likely be restored.
+2. Geospatial context: where the storm hits and when it reaches each customer.
+3. Network relationships: how the grid is wired, so we know exactly who shares a failed
+device.
+4. Operational restoration inputs: what crews are actually doing in real time.
+5. Customer communication design: how to say it clearly, honestly and safely.
+--- PAGE 2 ---
+Core design principle
+The AI never invents facts about the grid. Models and data compute the truth. The
+messaging layer only explains it. If we don't know a restoration time, the message says so
+honestly instead of guessing.
+2. Goals and non-goals
+Goals (what we must demo)
+1. A simulated storm moves through a ﬁctional town over simulated time.
+2. Before the storm, at-risk customers get a pre-storm warning text.
+3. As equipment fails, exactly the right customers (traced through the grid graph) get an
+outage text explaining the cause.
+4. As crews are assigned and work, customers get updates with an estimated restoration
+time range and conﬁdence level.
+5. When power returns, customers get a restored text.
+6. At least one message is delivered to a real phone during the demo (via Twilio trial).
+7. Customers with medical equipment are ﬂagged and prioritized.
+Stretch goals (only after the goals above work)
+Two-way texting: customer replies STATUS  and gets their current snapshot.
+An AI language model personalizes message wording (still grounded in the snapshot).
+A simple web outage map or internal dashboard.
+Spanish-language messages.
+Non-goals (do NOT build these)
+Connections to real utility systems (real OMS, SCADA, smart meters). We use synthetic
+data only.
+Web app or voice/phone channels for customers (folders exist as placeholders for the
+future).
+User accounts, login, or payment of any kind.
+Production deployment, scaling, or security hardening.
+Real customer personal data. All names and phone numbers are fake, except the team's
+own veriﬁed demo phones.
+3. System architecture
+Data ﬂows top to bottom through ﬁve layers:
+--- PAGE 3 ---
+Folder map
+Folder Layer Owner
+data/connectors/ , data/schemas/ , data/sample/ 1 Person 1
+analytics/network/ 2 Person 1
+analytics/predictive/ , analytics/geospatial/ 2 Person 2
+services/ , tests/storm_replay/ 3 Person 3
+messaging/ , channels/sms/ , docs/message_catalog.md 4 and 5 Person 4
+channels/web/ , channels/voice/ , dashboard/ future nobody (stretch only)
+docs/ , README.md , SPEC.md shared everyone
+4. The ﬁve components explained
+4.1 Predictive analytics (Person 2)
+Outage risk (before the storm): a score from 0 to 1 per feeder estimating the chance of an
+outage. Inputs: forecast wind gust, rainfall, vegetation density, asset age, overhead vs.
+underground lines. A simple weighted formula or small scikit-learn model on synthetic
+data is acceptable.
+Estimated time of restoration, ETR (during the storm): given damage type, crews
+available and current time, return an earliest time, latest time and conﬁdence (low ,
+medium , high ). Never a single exact time.
+LAYER 1  Data sources        weather / storm  |  grid assets (GIS)  |  outages & crews  
+|  customers
+              │
+LAYER 2  Analytics engines   predictive models  |  geospatial engine  |  network graph
+              │
+LAYER 3  Services            customer snapshot builder  →  lifecycle tracker  →  alert 
+triggers
+              │
+LAYER 4  Messaging           templates  →  composer  →  guardrails  →  throttle
+              │
+LAYER 5  Channels            SMS (only channel for this project)
+--- PAGE 4 ---
+4.2 Geospatial context (Person 2)
+Model the storm as a center point moving along a straight path at a ﬁxed speed with a
+wind radius.
+Compute when the storm reaches each customer and whether they're in the high-wind
+zone.
+Keep it simple: plain math on latitude/longitude (haversine distance) is ﬁne. Shapely is
+optional.
+4.3 Network relationships (Person 1)
+The grid is a directed graph: substation → feeder → transformer → customer .
+Key insight: physical closeness is not electrical connection. Neighbors on different
+transformers can have different outcomes, and the graph explains why.
+Must support: ﬁnding all customers downstream of a failed device, ﬁnding the path
+upstream from a customer, and guessing the root-cause device from a group of outaged
+customers.
+4.4 Operational restoration inputs (Person 1 creates data, Person 3 consumes it)
+In real life these come from outage systems, smart meters and crew dispatch. For us they
+come from a storm timeline ﬁle: a scripted list of events (device fails, crew assigned,
+crew on site, device restored) at simulated times.
+These events always override predictions. Once a device is actually reported as restored,
+it's restored, no matter what a model said.
+4.5 Customer communication design (Person 4)
+Plain language at about an 8th-grade reading level. "A tree fell on a line serving your
+street," not "fault on lateral L-1203."
+One SMS segment: 160 characters max per message.
+Honest uncertainty: if there's no ETR, say crews are assessing and when the next update
+will come.
+Proactive: send at meaningful moments only (see the trigger rules in Section 7).
+Safety wording (downed wires, gas smell, call 911) is ﬁxed text, never generated or edited
+by AI.
+Every message ends with opt-out info where required: Reply STOP to opt out  (can be
+shortened to STOP=end ).
+5. Team roles and goals
+Fill in each owner's name at the kickoff.
+--- PAGE 5 ---
+Person 1: Data and grid network. Owner: ________
+Goal: create the ﬁctional town and the grid graph everyone else builds on.
+Delivers:
+1. data/sample/  ﬁles described in Section 6.1 (ﬁrst rough version within 2 hours, shared
+with the team).
+2. data/schemas/  with the snapshot and alert-event deﬁnitions from Section 6 (as Python
+dataclasses or Pydantic models in data/schemas/models.py ).
+3. analytics/network/  functions in Section 6.2.
+4. data/sample/storm_timeline.json  (co-designed with Person 3), scripted so the demo
+tells a good story: some customers lose power, some don't, one medical customer, one
+ETR that changes, everyone restored by the end.
+Done when: given any device ID, the code returns the right list of affected customers, and the
+sample ﬁles load without errors.
+Person 2: Predictions and maps. Owner: ________
+Goal: answer "who's at risk, when does the storm arrive, and when will power come back."
+Delivers: the functions in Section 6.3, in analytics/predictive/  and analytics/geospatial/ .
+Done when: every feeder has a risk score, every customer has a storm arrival time, and the
+ETR function returns a sensible range for every damage type in Section 6.1.
+Person 3: Services and integration. Owner: ________
+Goal: tie everything together and produce the demo.
+Delivers:
+1. services/context/snapshot.py : builds a CustomerSnapshot  for every customer at a given
+simulated time.
+2. services/context/lifecycle.py : tracks each customer's status through 
+normal → 
+at_risk → outage_confirmed → restored .
+3. services/events/triggers.py : compares old vs. new snapshots and emits AlertEvent s
+following the rules in Section 7.
+4. tests/storm_replay/replay.py : runs the full storm from the timeline, step by step, and
+hands each AlertEvent  to Person 4's code. This is the demo.
+Done when: running the replay prints (or sends) the full sequence of alerts for the whole
+storm, end to end.
+--- PAGE 6 ---
+Person 4: Messaging and SMS. Owner: ________
+Goal: turn each alert into a clear, safe, correct text message and deliver it.
+Delivers:
+1. messaging/templates/*.txt : one template per alert type (Section 6.4).
+2. messaging/composer.py , messaging/guardrails.py , messaging/throttle.py  (Section 6.5).
+3. channels/sms/provider.py : sending through Twilio, with a dry-run mode that prints
+messages instead of sending. Dry-run is the default.
+4. channels/sms/consent.py : only text customers with sms_opt_in = true , handle STOP.
+5. docs/message_catalog.md : every message type, when it ﬁres, and example output.
+6. A working Twilio trial number with the team's phones veriﬁed as recipients.
+Done when: every AlertEvent  from the replay becomes a valid message under 160 characters,
+and at least one arrives on a real phone.
+6. Data contracts (how everyone's work connects)
+These are the agreed interfaces. Build to them exactly. Until an upstream piece exists, fake its
+output using these shapes so you are never blocked.
+6.1 Sample data ﬁles (Person 1 → everyone)
+All in data/sample/ , as JSON. Times are ISO 8601 strings in local time, e.g. 
+"2026-10-
+24T21:00:00" . Coordinates are decimal degrees.
+substations.json : list of { "id": "SUB-1", "name": str, "lat": float, "lon": float }
+feeders.json : list of
+(overhead_pct  and vegetation_density  are 0 to 1.)
+transformers.json : list of 
+{ "id": "TX-17", "feeder_id": "FDR-3", "lat": float, "lon": 
+float }
+customers.json : list of
+json
+{ "id": "FDR-3", "substation_id": "SUB-1", "overhead_pct": 0.8,
+  "vegetation_density": 0.6, "avg_asset_age_years": 32 }
+json
+--- PAGE 7 ---
+storm.json :
+storm_timeline.json : ordered list of operational events:
+type  is one of: device_failed , crew_assigned , crew_on_site , damage_assessed ,
+device_restored .
+damage_type  (on device_failed  or damage_assessed ) is one of: unknown , tree_on_line ,
+blown_fuse , broken_pole , transformer_failure , substation_damage .
+Crew events include "crew_id": "CREW-2" .
+A device_id  can be a feeder or a transformer (or a substation for the worst case).
+Plain-language cause text (Person 4 uses this mapping, Person 1 uses these keys):
+damage_type Text in message
+unknown crews are checking the cause
+tree_on_line a tree fell on a power line
+blown_fuse a fuse protecting your area tripped
+broken_pole a damaged utility pole
+transformer_failure equipment serving your street failed
+substation_damage damage at a local substation
+{ "id": "C-1042", "first_name": "Maria", "phone": "+16145550123",
+  "lat": 39.99, "lon": -83.01, "transformer_id": "TX-17",
+  "medical_priority": false, "sms_opt_in": true, "language": "en" }
+json
+{ "name": "Storm Ava", "start_time": "2026-10-24T18:00:00",
+  "start_lat": float, "start_lon": float,
+  "heading_degrees": 60, "speed_kmh": 40,
+  "wind_radius_km": 15, "peak_gust_kmh": 110, "rainfall_mm": 60 }
+json
+{ "time": "2026-10-24T19:40:00", "type": "device_failed",
+  "device_id": "TX-17", "damage_type": "tree_on_line" }
+--- PAGE 8 ---
+6.2 Network functions (Person 1 → Person 3)
+In analytics/network/ :
+6.3 Prediction and geospatial functions (Person 2 → Person 3)
+In analytics/predictive/ :
+where ETR  is 
+{ "etr_start": datetime, "etr_end": datetime, "confidence": "low" | 
+"medium" | "high" } . Rule: unknown  damage always returns confidence = "low"  and a wide
+range. broken_pole  and substation_damage  take much longer than blown_fuse .
+In analytics/geospatial/ :
+6.4 The customer snapshot (Person 3 → Person 4) — THE central contract
+Deﬁned in data/schemas/models.py . Every ﬁeld must be present; use null /None  when
+unknown.
+ 
+python
+build_graph() -> networkx.DiGraph                      # graph_builder.py, loads data/samp
+downstream_customers(device_id: str) -> list[str]      # tracing.py, customer IDs fed by t
+upstream_path(customer_id: str) -> list[str]           # tracing.py, [transformer, feeder
+infer_root_cause(out_customer_ids: list[str]) -> str   # root_cause.py, most likely failed
+python
+outage_risk(feeder_id: str, storm: dict) -> float      # outage_risk.py, 0.0 to 1.0
+predict_etr(damage_type: str, crews_available: int,
+            now: datetime) -> ETR                      # etr.py
+ 
+python
+storm_position(storm: dict, t: datetime) -> tuple[float, float]       # storm_overlay.py
+storm_arrival_time(storm: dict, lat: float, lon: float) -> datetime | None   # None if nev
+in_high_wind_zone(storm: dict, lat: float, lon: float, t: datetime) -> bool
+json
+--- PAGE 9 ---
+status : normal  | at_risk  | outage_confirmed  | restored
+cause : a damage_type  key from 6.1, or null
+confidence : low  | medium  | high , or null  when there's no ETR
+crew_status : null  | assigned  | on_site
+6.5 Alert events and messaging functions (Person 3 → Person 4)
+AlertEvent  (in data/schemas/models.py ):
+alert_type  is one of: pre_storm , outage_confirmed , crew_assigned , etr_update , restored .
+Each has a matching template ﬁle in messaging/templates/ .
+Messaging functions (Person 4):
+{
+  "customer_id": "C-1042",
+  "first_name": "Maria",
+  "phone": "+16145550123",
+  "language": "en",
+  "sms_opt_in": true,
+  "medical_priority": false,
+  "feeder_id": "FDR-3",
+  "transformer_id": "TX-17",
+  "status": "outage_confirmed",
+  "risk_score": 0.72,
+  "storm_arrival": "2026-10-24T19:15:00",
+  "cause": "tree_on_line",
+  "etr_start": "2026-10-24T21:00:00",
+  "etr_end": "2026-10-24T22:30:00",
+  "confidence": "high",
+  "crew_status": "on_site",
+  "updated_at": "2026-10-24T20:05:00"
+}
+json
+{ "alert_type": "etr_update", "customer_id": "C-1042",
+  "snapshot": { ...CustomerSnapshot... },
+  "previous_snapshot": { ...CustomerSnapshot or null... },
+  "sim_time": "2026-10-24T20:05:00" }
+python
+--- PAGE 10 ---
+Single entry point Person 3 calls (Person 4 builds it in messaging/__init__.py ):
+7. Alert trigger rules (Person 3 implements, Person 4 writes wording)
+Alert type Fires when Sent at most
+pre_storm status becomes at_risk  (risk_score ≥ 0.5 and storm arrives
+within 12 hours)
+once per
+customer
+outage_confirmed status changes to outage_confirmed once per outage
+crew_assigned crew_status  changes from null  to assigned  or
+on_site
+once per outage
+etr_update ETR start or end moves by more than 60 minutes, or
+conﬁdence changes, or an ETR appears for the ﬁrst time after
+being null
+as needed,
+subject to
+throttle
+restored status changes from outage_confirmed  to restored once per outage
+Throttle: at most one message per customer per 30 simulated minutes, exceptrestored ,
+which always sends. If throttled, the latest information goes in the next allowed message.
+Medical priority customers get every alert type with no throttling, and their
+outage_confirmed  message includes a line pointing to emergency resources.
+8. Message guardrails (Person 4)
+Every outgoing message must pass all of these, or it is not sent and the problem is logged:
+ 
+compose(event: AlertEvent) -> str                         # messaging/composer.py
+check(message: str, event: AlertEvent) -> list[str]       # messaging/guardrails.py, list 
+allow(customer_id: str, alert_type: str,
+      sim_time: datetime) -> bool                         # messaging/throttle.py
+send(phone: str, body: str, dry_run: bool = True) -> dict # channels/sms/provider.py
+python
+handle_alert(event: AlertEvent, dry_run: bool = True) -> dict
+# checks consent → throttle → compose → guardrails → send
+# returns {"sent": bool, "body": str | None, "reason": str | None}
+--- PAGE 11 ---
+1. 160 characters or fewer.
+2. Mentions a restoration time only if the snapshot has etr_start  and etr_end , and shows
+it as a range ("between 9 and 10:30 PM").
+3. Never states a time with low  conﬁdence as if it were ﬁrm; low-conﬁdence messages say
+"our best early estimate."
+4. No internal jargon or IDs (no "FDR-3", "TX-17", "lateral").
+5. Sent only if sms_opt_in  is true.
+6. Safety text is copied exactly from messaging/safety/ , never generated.
+Example messages (style reference):
+Pre-storm: 
+Hi Maria, Storm Ava may cause outages in your area around 7 PM tonight. 
+Charge phones and devices now. STOP=end
+Outage: 
+Maria, your power is out because a tree fell on a power line. Crews are 
+assessing. Next update by 9 PM. STOP=end
+ETR: 
+Maria, a crew is on site. We expect power back between 9 and 10:30 PM 
+tonight. STOP=end
+Restored: 
+Maria, power is restored at your address. Still out? Reply OUT. Thanks 
+for your patience. STOP=end
+9. The demo (Person 3 leads, everyone supports)
+Run python -m tests.storm_replay.replay  (dry-run by default; --live  to send real texts to
+veriﬁed team phones only).
+The replay steps simulated time forward (e.g., 10 minutes per step), and at each step:
+1. Applies any storm_timeline.json  events up to the current time.
+2. Updates storm position and risk (Person 2).
+3. Traces affected customers through the graph (Person 1).
+4. Rebuilds snapshots and runs triggers (Person 3).
+5. Sends each alert through handle_alert  (Person 4).
+6. Prints a readable log: time, storm position, outages, and each message sent.
+Demo story (target, about 3 minutes): storm approaches → pre-storm warnings → tree takes
+out a transformer → those customers get outage texts while a neighbor on another transformer
+stays powered (show the graph explaining why) → crew assigned → ETR updates as damage is
+assessed → medical customer prioritized → restored texts arrive, one on a real phone in front of
+the judges.
+--- PAGE 12 ---
+10. Working together
+Order of work
+1. Kickoff (all, ~15 min): read this spec, ﬁll in owners, conﬁrm Section 6 contracts.
+2. Hours 0–2: Person 1 ships rough sample data. Everyone else builds against fake data
+matching Section 6.
+3. Hours 2–8: each person completes their deliverables.
+4. Integration checkpoints: merge and run the replay together every few hours.
+5. Final stretch: polish the demo story, stretch goals only if the core demo is solid.
+Dependencies
+Nobody waits: if your input isn't ready, write a small fake that returns the Section 6 shape and
+swap in the real one later.
+Git workﬂow
+One branch per person, e.g. jace/network , merged into main  via pull request.
+Only edit ﬁles in folders you own (Section 3). Changes to data/schemas/  or this spec
+need a heads-up to the whole team.
+Never commit .env  (Twilio keys) or real personal data.
+main  must always run: python -m tests.storm_replay.replay  should not crash.
+Suggested libraries
+networkx  (graph), pandas  (data), scikit-learn  (optional model), pydantic  (schemas),
+twilio  (SMS), python-dotenv  (conﬁg), pytest  (tests). Shapely/geopandas optional.
+11. Rules for AI assistants working on this project
+1. Read this whole spec before writing code. Ask which role (Person 1–4) you are helping.
+2. Only modify ﬁles in that person's folders unless explicitly asked otherwise.
+3. Match the function signatures and data shapes in Section 6 exactly. Do not rename ﬁelds
+or add required ﬁelds without ﬂagging it as a contract change.
+Person 1 (sample data, graph) ──► Person 2 (risk, ETR, storm timing)
+        │                                   │
+        └──────────────► Person 3 ◄─────────┘   (snapshots, triggers, replay)
+                              │
+                              ▼
+                         Person 4   (compose, guardrails, SMS)
+--- PAGE 13 ---
+4. Use synthetic data only. Never generate real-looking personal data beyond the fake
+sample set.
+5. Default SMS to dry-run. Never write code that sends real texts unless --live  is passed
+explicitly.
+6. Keep it hackathon-simple: working and readable beats clever. Prefer standard library and
+the libraries in Section 10.
+7. Never let generated text state facts not in the snapshot (no invented restoration times,
+causes or crew details).
+8. Include a short docstring in every function and a small runnable example or test when
+practical.
+12. Glossary
+Term Meaning
+Substation Facility that steps down high-voltage power and feeds several feeders.
+Feeder A main distribution circuit leaving a substation, serving a neighborhood.
+Transformer Device on a pole or pad that serves a handful of homes on one street.
+Downstream Everything fed by a device. If a device fails, everything downstream loses power.
+ETR Estimated time of restoration. We always express it as a range plus conﬁdence.
+OMS Outage management system, the utility's real-time outage tracker (simulated by our
+timeline).
+AMI / smart
+meter
+Meters that report when power drops or returns (simulated by our timeline).
+Snapshot Our per-customer record of current status, cause, ETR and crew status (Section 6.4).
+Dry-run Messages are printed instead of actually sent.
+Medical priority Customer depends on powered medical equipment; gets extra alerts and outreach.
