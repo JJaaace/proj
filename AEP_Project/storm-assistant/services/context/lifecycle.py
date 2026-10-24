@@ -47,8 +47,9 @@ class OperationalState:
     def __init__(self, timeline: list[dict], device_ids: set[str]) -> None:
         """Validate the whole timeline before any replay or delivery begins."""
         self.events = []
-        for raw in timeline:
+        for source_index, raw in enumerate(timeline):
             event = dict(raw)
+            event["_source_index"] = source_index
             event["time"] = local_time(event["time"])
             kind, device = event.get("type"), event.get("device_id")
             if kind not in EVENT_TYPES:
@@ -69,27 +70,35 @@ class OperationalState:
         self.sim_time: datetime | None = None
         # Validate sequencing before the first alert can be dispatched.
         active: set[str] = set()
+        restored: set[str] = set()
         for event in self.events:
             kind, device = event["type"], event["device_id"]
             if kind == "device_failed":
                 if device in active:
-                    raise ValueError(f"Duplicate active failure for {device}")
+                    event["_diagnostic"] = "DUPLICATE_FAILURE_REPORT"
                 active.add(device)
+            elif kind == "device_restored" and device in restored and device not in active:
+                event["_diagnostic"] = "DUPLICATE_RESTORATION_REPORT"
             elif device not in active:
                 raise ValueError(f"{kind} references inactive failure {device}")
             elif kind == "device_restored":
                 active.remove(device)
+                restored.add(device)
 
-    def advance(self, sim_time: datetime) -> list[dict]:
+    def advance(self, sim_time: datetime, *, max_events: int | None = None) -> list[dict]:
         """Apply all not-yet-consumed events at or before a monotonic clock."""
         sim_time = local_time(sim_time)
         if self.sim_time is not None and sim_time < self.sim_time:
             raise ValueError("Replay clock cannot move backwards")
+        if max_events is not None and (type(max_events) is not int or max_events < 1):
+            raise ValueError("max_events must be a positive integer or None")
         applied = []
         while self.cursor < len(self.events) and self.events[self.cursor]["time"] <= sim_time:
             event = self.events[self.cursor]
             device, kind = event["device_id"], event["type"]
-            if kind == "device_failed":
+            if event.get("_diagnostic"):
+                pass  # Consume duplicate reports without resetting or removing an incident.
+            elif kind == "device_failed":
                 self.active_failures[device] = Failure(
                     device, event["time"], event["damage_type"], revised_at=event["time"],
                 )
@@ -108,6 +117,8 @@ class OperationalState:
                     failure.revised_at = event["time"]
             applied.append(event)
             self.cursor += 1
+            if max_events is not None and len(applied) >= max_events:
+                break
         self.sim_time = sim_time
         return applied
 
@@ -117,7 +128,7 @@ class OperationalState:
         """Trace each active device through network connectivity, never distance."""
         affected: dict[str, list[Failure]] = {}
         for failure in self.active_failures.values():
-            for customer_id in downstream_customers(failure.device_id):
+            for customer_id in sorted(set(downstream_customers(failure.device_id))):
                 if customer_id not in customer_ids:
                     raise ValueError(f"Network returned unknown customer {customer_id!r}")
                 affected.setdefault(customer_id, []).append(failure)

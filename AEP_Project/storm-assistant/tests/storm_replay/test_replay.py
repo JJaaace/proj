@@ -1,6 +1,7 @@
 """Offline end-to-end replay, operational ordering, and live gating."""
 
 from dataclasses import replace
+from collections import Counter
 from datetime import timedelta
 import os
 from pathlib import Path
@@ -21,7 +22,10 @@ def test_entire_replay_handoff_and_neighbor(runtime):
     runtime = replace(runtime, dependencies=replace(runtime.dependencies, handle_alert=handler))
     lines = []
     result = run_replay(runtime, crews_available=1, log=lines.append)
-    assert handler.call_count == len(result.alerts) == 18
+    expected = {"pre_storm": 3, "outage_confirmed": 3, "crew_assigned": 3, "etr_update": 6, "restored": 3}
+    assert Counter(event.alert_type for event in result.alerts) == expected
+    assert Counter(event.customer_id for event in result.alerts) == {"C-1": 6, "C-2": 6, "C-4": 6}
+    assert handler.call_count == len(result.alerts) == sum(expected.values())
     assert all(call.kwargs == {"dry_run": True} for call in handler.call_args_list)
     assert {event.alert_type for event in result.alerts} == {
         "pre_storm", "outage_confirmed", "crew_assigned", "etr_update", "restored",
@@ -34,7 +38,9 @@ def test_entire_replay_handoff_and_neighbor(runtime):
     assert all(event.snapshot.medical_priority for event in result.alerts if event.customer_id == "C-1")
     assert any(event.customer_id == "C-4" and not event.snapshot.sms_opt_in for event in result.alerts)
     assert len(result.applied_events) == len(runtime.timeline)
-    assert all("handler_sent=False" in line and "throttled" in line for line in lines if "ALERT" in line)
+    delivery = [line for line in lines if "] DELIVERY " in line]
+    assert len(delivery) == len(result.alerts)
+    assert all("handler_sent=False" in line and "MESSAGING_THROTTLED" in line for line in delivery)
     assert not any("delivered" in line for line in lines)
 
 
@@ -118,7 +124,7 @@ def test_default_cli_without_secrets_exits_cleanly():
                              capture_output=True, text=True, timeout=20)
     assert process.returncode == 0, process.stderr
     assert "DRY-RUN" in process.stdout and "active_failures=none" in process.stdout
-    assert "simulated_handler" in process.stdout
+    assert "MESSAGING_MOCK_UNAVAILABLE" in process.stdout
 
 
 @pytest.mark.parametrize("minutes", [0, -1])

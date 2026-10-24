@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from .contracts import Dependencies, Town, field, local_time
+from .contracts import Dependencies, Town, field, local_time, validate_snapshot
 from .lifecycle import Failure, OperationalState, customer_status
 
 
@@ -23,6 +23,14 @@ class SnapshotBuilder:
         self.crews_available = crews_available
         self.transformers = {row["id"]: row for row in town.transformers}
         self.primary_failures: dict[str, str] = {}
+        self.affected_failures: dict[str, list[Failure]] = {}
+
+    def _trace_device(self, device_id: str) -> list[str]:
+        """Reject valid-looking IDs whose tracing contradicts actual electrical links."""
+        traced = set(self.dependencies.downstream_customers(device_id))
+        if traced != self.town.expected_downstream(device_id):
+            raise ValueError(f"Network electrical trace disagrees with source links for {device_id}")
+        return sorted(traced)
 
     def _estimate(self, failure: Failure) -> tuple[datetime | None, datetime | None, str | None]:
         """Anchor estimates to operational revisions; unknown damage has no ETR."""
@@ -37,7 +45,7 @@ class SnapshotBuilder:
             start = local_time(field(estimate, "etr_start"))
             end = local_time(field(estimate, "etr_end"))
             confidence = field(estimate, "confidence")
-            if start > end or confidence not in ("low", "medium", "high"):
+            if start >= end or confidence not in ("low", "medium", "high"):
                 raise ValueError(f"Invalid ETR for {failure.device_id}")
             failure.estimate = (start, end, confidence)
             failure.estimate_key = key
@@ -58,8 +66,9 @@ class SnapshotBuilder:
                 raise ValueError(f"Invalid risk score for {feeder['id']}: {risk!r}")
             risks[feeder["id"]] = float(risk)
         affected = state.affected_customers(
-            deps.downstream_customers, {row["id"] for row in self.town.customers},
+            self._trace_device, {row["id"] for row in self.town.customers},
         )
+        self.affected_failures = affected
         snapshots = {}
         self.primary_failures = {}
         for customer in self.town.customers:
@@ -96,4 +105,5 @@ class SnapshotBuilder:
                 storm_arrival=arrival, cause=cause, etr_start=etr_start, etr_end=etr_end,
                 confidence=confidence, crew_status=crew_status, updated_at=now,
             )
+            validate_snapshot(snapshots[identifier])
         return snapshots

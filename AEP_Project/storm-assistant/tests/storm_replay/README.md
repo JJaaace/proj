@@ -6,6 +6,9 @@ Run commands from the application root, `AEP_Project/storm-assistant`:
 python -m tests.storm_replay.replay
 python -m tests.storm_replay.replay --demo
 python -m pytest tests/storm_replay -q -rs
+python -m tests.storm_replay.replay --demo --speed fast
+python -m tests.storm_replay.replay --demo --step
+python -m tests.storm_replay.replay --demo --verbose --audit-json /tmp/storm-audit.json
 ```
 
 Python 3.11+ is supported. The replay itself uses only the standard library.
@@ -16,6 +19,41 @@ replay does not import messaging, instantiate SMS clients, or access the network
 All code lives in Person 3's `services/` and `tests/` directories. No shared
 contracts or teammate implementations are replaced. The original Section 6
 snapshot has exactly 17 fields; all fields are supplied, including `None` values.
+The improvement audit, validation results, and precise teammate actions are in
+[`IMPROVEMENT_REPORT.md`](IMPROVEMENT_REPORT.md).
+
+## Decision audit and playback
+
+Each source report, changed network impact, changed snapshot, candidate alert,
+and messaging outcome has a structured record. `ReplayResult.audit` keeps these
+records in memory. `--audit-json` exports them with the final counts and mode.
+Version 1 has `format_version`, `mode`, `dry_run`, `notification_delivery`,
+`deferred_delivery`, `summary`, and ordered `entries`. Entries have stable sequence
+numbers, local simulated time, category, customer/asset IDs, alert type, decision,
+reason code, and whitelisted operational details. An emitted alert and its handler
+outcome share `details.alert_sequence`. Equal simulated times remain ordered by
+entry sequence and operational source index.
+
+The export omits customer names, phones, customer coordinates, message bodies,
+raw handler reasons, exception text, and credentials. Unknown handler reasons
+produce `MESSAGING_OUTCOME_UNAVAILABLE`; they are not interpreted as consent or
+queue behavior. A throttled result is recorded as blocked by messaging, with
+deferred support explicitly unverified. A handler exception records a failed
+outcome and replay continues; malformed return dictionaries fail clearly.
+
+The console separates `ALERT ... emitted` from `DELIVERY ... handler_sent=...`.
+An offline adapter never claims delivery or successful message composition.
+`NO_ALERT C-3 reason=NOT_DOWNSTREAM_OF_FAILED_DEVICE` explains the demo neighbor.
+The default display shows meaningful frames, ETR ranges/confidence, medical
+flags on eligible alerts, and a final per-type/messaging summary. `--verbose`
+prints every evaluated candidate type, including non-events and duplicates.
+
+`--speed instant|fast|normal` changes only wall-clock waits between visible
+frames (0 / 0.05 / 0.3 seconds). `--step` waits for Enter on interactive input,
+and falls back automatically for noninteractive input or EOF. Playback controls
+do not change simulated times, audit records, predictions, or alert order.
+`--step-minutes` retains its earlier meaning: simulated sampling cadence, not
+display speed. Report creation refuses to overwrite any existing file.
 
 ## Runtime modes
 
@@ -52,7 +90,10 @@ live demonstration. No live demonstration was run during implementation.
   entry applies exactly once. Equal timestamps retain source order. The replay
   evaluates regular ticks **and exact operational timestamps**, preserving
   failures shorter than one tick. A baseline tick precedes the first event;
-  events sharing one timestamp are applied as one batch before evaluation.
+  every operational report is evaluated in source order, including reports sharing
+  a timestamp. This preserves failure/restoration/new-failure transitions at the
+  same local time. Normal `OperationalState.advance()` still consumes all due
+  events; the replay driver requests single-event substeps internally.
 - All timestamps are naive local datetimes, as specified by Section 6. Offset
   timestamps are rejected. No lifecycle decisions use the machine's clock.
 - Only active graph-connected failures can establish an outage. Failures on
@@ -81,7 +122,13 @@ live demonstration. No live demonstration was run during implementation.
 - `handler_sent` is the handler's reported value, with mode and reason logged;
   the replay does not describe a dry-run or throttle result as phone delivery.
 - Timeline references and event sequencing are validated before dispatch.
-  Crew events for inactive failures and duplicate active failures fail clearly.
+  Crew events for inactive failures and orphan restoration reports fail clearly.
+  Duplicate active failure and repeated restoration reports are consumed once
+  as explicit diagnostic no-ops; they do not reset incidents or estimates.
+- Network traces are deduplicated and checked against the source electrical
+  mappings. A known but incorrectly connected customer is an error. Canonical
+  snapshots must have the complete valid contract, and previous snapshots cannot
+  come from a future simulated time.
 
 ## Upstream handoff
 
@@ -114,3 +161,16 @@ validation of missing teammate code. The separate real-team end-to-end test is
 explicitly skipped until every upstream component is available. Shared schema
 serialization, real predictive behavior, Person 4's deferred delivery, medical
 message wording, and actual SMS remain integration checkpoints.
+
+## Teja's available branch
+
+`test_person2_branch.py` checks the already-fetched `origin/teja/predictions` ref
+using a temporary `git archive`. It never fetches, switches, merges, writes into
+`analytics/`, or replaces team code in the working tree. It runs the actual five
+Person 2 functions in a subprocess, using labeled fixture data/models/network
+and an offline messaging stub for the other roles. If the ref is unavailable,
+that test skips with instructions. This is **real Person 2-only coverage**, not
+the full real-integration test. At ref `26d8fe4` it yields 19 events: four risk
+warnings and the same 15 operational alerts. Both fixture feeders have the same
+high-risk attributes under real analytics, unlike the fixture predictor's lower
+score for `FDR-2`; `C-3` is warned but remains powered.

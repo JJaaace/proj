@@ -1,16 +1,17 @@
 """Test real-module wiring with isolated doubles; mark missing team code honestly."""
 
-from dataclasses import make_dataclass
+from dataclasses import make_dataclass, replace
 import json
 from pathlib import Path
 import sys
 from types import ModuleType
 from unittest.mock import Mock
+import socket
 
 import pytest
 
 from .demo import DemoAlert, DemoSnapshot
-from .integration import PROJECT_ROOT, _export, load_runtime
+from .integration import PROJECT_ROOT, _export, integration_inventory, load_runtime, require_model, require_signature
 from .replay import run_replay
 
 
@@ -106,16 +107,60 @@ def test_integrated_mode_requires_real_sample_files(tmp_path):
         load_runtime("integrated", tmp_path)
 
 
-@pytest.mark.skipif(
-    not all((PROJECT_ROOT / marker).exists() for marker in (
-        "data/schemas/models.py", "data/sample/storm_timeline.json", "analytics/network",
-        "analytics/predictive", "analytics/geospatial", "messaging",
-    )), reason="Awaiting Shaun's canonical models/data/network, Teja's analytics, and Atharva's messaging",
-)
-def test_actual_team_modules_end_to_end():
+REAL_INTEGRATION_GAPS = [f"{item['component']}: {', '.join(item['missing'])}"
+                         for item in integration_inventory() if item["state"] == "MISSING"]
+
+
+@pytest.mark.skipif(bool(REAL_INTEGRATION_GAPS), reason="Real integration blocked: " + "; ".join(REAL_INTEGRATION_GAPS))
+def test_actual_team_modules_end_to_end(monkeypatch):
     """Run real canonical models and messaging once all upstream pieces are present."""
+    network = Mock(side_effect=AssertionError("Real integration must never access SMS/network"))
+    monkeypatch.setattr(socket.socket, "connect", network)
+    monkeypatch.setattr(socket, "create_connection", network)
     runtime = load_runtime("integrated")
-    result = run_replay(runtime, log=lambda line: None)
+    from messaging.guardrails import check
+
+    handler = Mock(wraps=runtime.dependencies.handle_alert)
+    result = run_replay(replace(runtime, dependencies=replace(runtime.dependencies, handle_alert=handler)),
+                        crews_available=1, log=lambda line: None)
     assert result.applied_events
     assert result.alerts
+    assert runtime.mode == "integrated"
+    assert all(type(event.snapshot) is runtime.dependencies.snapshot_model for event in result.alerts)
+    assert all(type(event) is runtime.dependencies.alert_model for event in result.alerts)
+    assert handler.call_count == len(result.alerts)
+    assert all(call.kwargs == {"dry_run": True} for call in handler.call_args_list)
+    assert any(event.snapshot.medical_priority for event in result.alerts)
+    assert any(entry.reason_code == "NOT_DOWNSTREAM_OF_FAILED_DEVICE" for entry in result.audit.entries)
+    assert result.summary["delivery_reason_counts"].get("MESSAGING_SEND_ERROR", 0) == 0
+    bodies = [(event, outcome["body"]) for event, outcome in zip(result.alerts, result.outcomes) if outcome["body"]]
+    assert bodies, "Real handler produced no messages; real guardrail coverage is not established"
+    for event, body in bodies:
+        assert len(body) <= 160 and check(body, event) == []
+        assert not any(device in body for device in runtime.town.device_ids)
+    for event, outcome in zip(result.alerts, result.outcomes):
+        if event.snapshot.medical_priority and event.snapshot.sms_opt_in:
+            assert outcome["reason"] not in ("throttled", "throttle"), "Medical throttle bypass is Person 4-owned"
+        if event.alert_type == "restored" and event.snapshot.sms_opt_in:
+            assert outcome["reason"] not in ("throttled", "throttle"), "Restoration bypass is Person 4-owned"
     assert not any(snapshot.status == "outage_confirmed" for snapshot in result.snapshots.values())
+    network.assert_not_called()
+
+
+def test_inventory_lists_actionable_missing_paths(tmp_path):
+    """A scaffold is missing, never mislabeled real merely because exports are assumed."""
+    inventory = integration_inventory(tmp_path)
+    assert len(inventory) == 6
+    assert all(item["state"] == "MISSING" and item["missing"] for item in inventory)
+
+
+def test_contract_mismatch_is_reported_instead_of_adapted():
+    """An extra required argument is an upstream mismatch, not a changed Person 3 API."""
+    def incompatible(device_id, graph):
+        """Represent an incompatible teammate tracing signature."""
+        return []
+
+    with pytest.raises(ValueError, match="Contract mismatch.*downstream_customers"):
+        require_signature(incompatible, "downstream_customers", ("device_id",))
+    with pytest.raises(ValueError, match="constructor"):
+        require_model(DemoAlert, "CustomerSnapshot", ("customer_id", "unexpected_field"))
